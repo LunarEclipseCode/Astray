@@ -27,6 +27,7 @@
             planeTexture = THREE.ImageUtils.loadTexture('/concrete.png'),
             brickTexture = THREE.ImageUtils.loadTexture('/brick.png'),
             gameState = undefined,
+            gamepadIndex = -1,
 
             // Box2D shortcuts
             b2World = Box2D.Dynamics.b2World,
@@ -135,6 +136,48 @@
         }
 
 
+        function getGamepadInput() {
+            if (gamepadIndex === -1) {
+                return [0, 0];
+            }
+
+            var gamepads = navigator.getGamepads();
+            var gamepad = gamepads[gamepadIndex];
+
+            if (!gamepad) {
+                return [0, 0];
+            }
+
+            var x = 0;
+            var y = 0;
+
+            var leftStickX = gamepad.axes[0];
+            var leftStickY = gamepad.axes[1];
+
+            var rightStickX = gamepad.axes[2];
+            var rightStickY = gamepad.axes[3];
+
+            var deadzone = 0.2;
+
+            if (Math.abs(leftStickX) > deadzone) {
+                x = leftStickX;
+            }
+            if (Math.abs(leftStickY) > deadzone) {
+                y = -leftStickY; // Invert Y axis for correct up/down movement
+            }
+
+            // Process right joystick only if no input from left 
+            if (Math.abs(rightStickX) > deadzone && x == 0 && y == 0) {
+                x = rightStickX;
+            }
+            if (Math.abs(rightStickY) > deadzone && x == 0 && y == 0) {
+                y = -rightStickY;
+            }
+
+            return [x, y];
+        }
+
+
         function updatePhysicsWorld() {
 
             // Apply "friction". 
@@ -142,8 +185,17 @@
             lv.Multiply(0.95);
             wBall.SetLinearVelocity(lv);
 
+            // Get input from both keyboard and gamepad
+            var gamepadAxis = getGamepadInput();
+            var finalAxis;
+            if (gamepadAxis[0] !== 0 || gamepadAxis[1] !== 0) {
+                finalAxis = gamepadAxis;
+            } else {
+                finalAxis = keyAxis;
+            }
+
             // Apply user-directed force.
-            var f = new b2Vec2(keyAxis[0] * wBall.GetMass() * 0.25, keyAxis[1] * wBall.GetMass() * 0.25);
+            var f = new b2Vec2(finalAxis[0] * wBall.GetMass() * 0.25, finalAxis[1] * wBall.GetMass() * 0.25);
             wBall.ApplyImpulse(f, wBall.GetPosition());
             keyAxis = [0, 0];
 
@@ -284,6 +336,15 @@
             $('#instructions').hide();
             KeyboardJS.bind.key('i', function () { $('#instructions').show() },
                 function () { $('#instructions').hide() });
+
+            // Add gamepad event listeners
+            window.addEventListener("gamepadconnected", function (e) {
+                gamepadIndex = e.gamepad.index;
+            });
+
+            window.addEventListener("gamepaddisconnected", function (e) {
+                gamepadIndex = -1;
+            });
 
             // Create the renderer.
             renderer = new THREE.WebGLRenderer();
