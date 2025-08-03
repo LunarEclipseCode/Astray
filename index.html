@@ -21,7 +21,7 @@
             mazeDimension = 21,
             planeMesh = undefined,
             ballMesh = undefined,
-            ballRadius = 0.25,
+            ballRadius = 0.225,
             keyAxis = [0, 0],
             ironTexture = THREE.ImageUtils.loadTexture('/ball.png'),
             planeTexture = THREE.ImageUtils.loadTexture('/concrete.png'),
@@ -33,6 +33,12 @@
             exitX = 0,
             exitY = 0,
             exitCorner = 0, // 0=top-right, 1=bottom-right, 2=bottom-left, 3=top-left
+
+            // Red balls
+            redBalls = [],
+            redBallMeshes = [],
+            redBallPrevPos = [],
+            numRedBalls = 0,
 
             // Box2D shortcuts
             b2World = Box2D.Dynamics.b2World,
@@ -64,6 +70,45 @@
             fixDef.restitution = 0.25;
             fixDef.shape = new b2CircleShape(ballRadius);
             wBall.CreateFixture(fixDef);
+
+            // Create red balls
+            redBalls = [];
+            redBallPrevPos = [];
+            numRedBalls = Math.floor((mazeDimension) / 2);
+
+            for (var i = 0; i < numRedBalls; i++) {
+                var redBallDef = new b2BodyDef();
+                redBallDef.type = b2Body.b2_dynamicBody;
+
+                // Find a good spawn position for red ball
+                var redX, redY;
+                do {
+                    redX = Math.floor(Math.random() * (mazeDimension - 2)) + 1;
+                    redY = Math.floor(Math.random() * (mazeDimension - 2)) + 1;
+                    // Ensure it's on a path (odd coordinates) and away from spawn
+                } while (maze[redX][redY] || redX % 2 === 0 || redY % 2 === 0 ||
+                    (Math.abs(redX - spawnX) < 3 && Math.abs(redY - spawnY) < 3));
+
+                redBallDef.position.Set(redX, redY);
+                var redBall = wWorld.CreateBody(redBallDef);
+
+                var redFixDef = new b2FixtureDef();
+                redFixDef.density = 1.0;
+                redFixDef.friction = 0.0;
+                redFixDef.restitution = 0.25;
+                redFixDef.shape = new b2CircleShape(ballRadius);
+                redBall.CreateFixture(redFixDef);
+
+                // Add movement properties for back-and-forth movement
+                // Pick a random direction: 0=horizontal, 1=vertical
+                redBall.movementAxis = Math.floor(Math.random() * 2);
+                redBall.direction = Math.random() < 0.5 ? -1 : 1;
+                redBall.speed = 0.6 + Math.random() * 0.6; // Random speed between 0.6 and 1.2
+                redBall.lastMove = 0;
+
+                redBalls.push(redBall);
+                redBallPrevPos.push({ x: redX, y: redY });
+            }
 
             // Create the maze.
             bodyDef.type = b2Body.b2_staticBody;
@@ -117,6 +162,17 @@
             ballMesh = new THREE.Mesh(g, m);
             ballMesh.position.set(spawnX, spawnY, ballRadius);
             scene.add(ballMesh);
+
+            // Add red balls
+            redBallMeshes = [];
+            for (var i = 0; i < redBalls.length; i++) {
+                var redG = new THREE.SphereGeometry(ballRadius, 32, 16);
+                var redM = new THREE.MeshPhongMaterial({map: ironTexture, color: 0xff0000});
+                var redBallMesh = new THREE.Mesh(redG, redM);
+                redBallMesh.position.set(redBalls[i].GetPosition().x, redBalls[i].GetPosition().y, ballRadius);
+                scene.add(redBallMesh);
+                redBallMeshes.push(redBallMesh);
+            }
 
             // Add the camera.
             var aspect = window.innerWidth / window.innerHeight;
@@ -183,6 +239,61 @@
         }
 
 
+        function updateRedBalls() {
+            for (var i = 0; i < redBalls.length; i++) {
+                var redBall = redBalls[i];
+                var pos = redBall.GetPosition();
+                var vel = redBall.GetLinearVelocity();
+                var currentTime = Date.now();
+
+                // Only move every 80ms
+                if (currentTime - redBall.lastMove > 80) {
+                    redBall.lastMove = currentTime;
+
+                    // Check if ball has stopped moving (hit a wall)
+                    var currentSpeed = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
+                    if (currentSpeed < 0.1) {
+                        redBall.direction *= -1;
+                    }
+
+                    var moveX = 0, moveY = 0;
+
+                    if (redBall.movementAxis === 0) { // Horizontal
+                        moveX = redBall.direction * 0.1;
+                    } else {
+                        moveY = redBall.direction * 0.1;
+                    }
+
+                    // Apply movement force
+                    var force = new b2Vec2(moveX * redBall.speed * 0.8, moveY * redBall.speed * 0.8);
+                    redBall.ApplyImpulse(force, redBall.GetPosition());
+                }
+
+                // Apply friction to red balls
+                var vel = redBall.GetLinearVelocity();
+                vel.Multiply(0.85);
+                redBall.SetLinearVelocity(vel);
+            }
+        }
+
+        function checkCollisions() {
+            var playerPos = wBall.GetPosition();
+
+            for (var i = 0; i < redBalls.length; i++) {
+                var redPos = redBalls[i].GetPosition();
+                var distance = Math.sqrt(
+                    Math.pow(playerPos.x - redPos.x, 2) +
+                    Math.pow(playerPos.y - redPos.y, 2)
+                );
+
+                if (distance < ballRadius * 2) {
+                    // Restart the level
+                    gameState = 'initialize';
+                    return;
+                }
+            }
+        }
+
         function updatePhysicsWorld() {
 
             // Apply "friction". 
@@ -203,6 +314,9 @@
             var f = new b2Vec2(finalAxis[0] * wBall.GetMass() * 0.25, finalAxis[1] * wBall.GetMass() * 0.25);
             wBall.ApplyImpulse(f, wBall.GetPosition());
             keyAxis = [0, 0];
+
+            updateRedBalls();
+            checkCollisions();
 
             // Take a time step.
             wWorld.Step(1 / 60, 8, 3);
@@ -227,6 +341,27 @@
             tempMat.multiplySelf(ballMesh.matrix);
             ballMesh.matrix = tempMat;
             ballMesh.rotation.getRotationFromMatrix(ballMesh.matrix);
+
+            // Update rotation of red balls
+            for (var i = 0; i < redBalls.length; i++) {
+                var redPos = redBalls[i].GetPosition();
+                var prevPos = redBallPrevPos[i];
+
+                var stepX = redPos.x - prevPos.x;
+                var stepY = redPos.y - prevPos.y;
+
+                // Update mesh position
+                redBallMeshes[i].position.x = redPos.x;
+                redBallMeshes[i].position.y = redPos.y;
+
+                if (Math.abs(stepX) > 0.001 || Math.abs(stepY) > 0.001) {
+                    redBallMeshes[i].rotation.y += stepX / ballRadius;
+                    redBallMeshes[i].rotation.x += -stepY / ballRadius;
+                }
+
+                redBallPrevPos[i].x = redPos.x;
+                redBallPrevPos[i].y = redPos.y;
+            }
 
             // Update camera and light positions.
             camera.position.x += (ballMesh.position.x - camera.position.x) * 0.1;
