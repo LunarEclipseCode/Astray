@@ -22,7 +22,6 @@
             planeMesh = undefined,
             ballMesh = undefined,
             ballRadius = 0.225,
-            keyAxis = [0, 0],
             ironTexture = THREE.ImageUtils.loadTexture('/ball.png'),
             planeTexture = THREE.ImageUtils.loadTexture('/concrete.png'),
             brickTexture = THREE.ImageUtils.loadTexture('/brick.png'),
@@ -40,6 +39,11 @@
             redBallPrevPos = [],
             numRedBalls = 0,
 
+            // FPS Counter
+            frameCount = 0,
+            fps = 0,
+            lastFpsUpdate = 0,
+
             // Box2D shortcuts
             b2World = Box2D.Dynamics.b2World,
             b2FixtureDef = Box2D.Dynamics.b2FixtureDef,
@@ -53,6 +57,38 @@
             // Box2D world variables 
             wWorld = undefined,
             wBall = undefined;
+
+        inputState = {
+            left: false,
+            right: false,
+            up: false,
+            down: false
+        };
+
+
+        function updateInputAxis() {
+            var x = 0, y = 0;
+            if (inputState.left) x -= 1;
+            if (inputState.right) x += 1;
+            if (inputState.up) y += 1;
+            if (inputState.down) y -= 1;
+            return [x, y];
+        }
+
+        function updateFPSCounter() {
+            var currentTime = performance.now();
+            frameCount++;
+
+            if (currentTime - lastFpsUpdate > 500) {
+                fps = Math.round((frameCount * 1000) / (currentTime - lastFpsUpdate));
+                frameCount = 0;
+                lastFpsUpdate = currentTime;
+
+                $('#performance').html(
+                    'FPS: ' + fps
+                );
+            }
+        }
 
 
         function createPhysicsWorld() {
@@ -113,36 +149,38 @@
             // Create the maze.
             bodyDef.type = b2Body.b2_staticBody;
             fixDef.shape = new b2PolygonShape();
-            fixDef.shape.SetAsBox(0.5, 0.5);
-            for (var i = 0; i < maze.dimension; i++) {
-                for (var j = 0; j < maze.dimension; j++) {
-                    if (maze[i][j]) {
-                        bodyDef.position.x = i;
-                        bodyDef.position.y = j;
+            for (var j = 0; j < maze.dimension; j++) {
+                var runStart = -1;
+                for (var i = 0; i <= maze.dimension; i++) {
+                    if (i < maze.dimension && maze[i][j]) {
+                        if (runStart < 0) runStart = i;
+                    } else if (runStart >= 0) {
+                        var length = i - runStart;
+                        var cx = runStart + length / 2 - 0.5;
+                        bodyDef.position.Set(cx, j);
+                        fixDef.shape.SetAsBox(length / 2, 0.5);
                         wWorld.CreateBody(bodyDef).CreateFixture(fixDef);
+                        runStart = -1;
                     }
                 }
             }
         }
 
-
         function generate_maze_mesh(field) {
             var dummy = new THREE.Geometry();
+            var geometry = new THREE.CubeGeometry(1, 1, 1, 1, 1, 1);
+            var mesh_ij = new THREE.Mesh(geometry);
+
             for (var i = 0; i < field.dimension; i++) {
                 for (var j = 0; j < field.dimension; j++) {
                     if (field[i][j]) {
-                        var geometry = new THREE.CubeGeometry(1, 1, 1, 1, 1, 1);
-                        var mesh_ij = new THREE.Mesh(geometry);
-                        mesh_ij.position.x = i;
-                        mesh_ij.position.y = j;
-                        mesh_ij.position.z = 0.5;
+                        mesh_ij.position.set(i, j, 0.5);
                         THREE.GeometryUtils.merge(dummy, mesh_ij);
                     }
                 }
             }
             var material = new THREE.MeshPhongMaterial({ map: brickTexture });
-            var mesh = new THREE.Mesh(dummy, material)
-            return mesh;
+            return new THREE.Mesh(dummy, material);
         }
 
 
@@ -165,11 +203,11 @@
 
             // Add red balls
             redBallMeshes = [];
+            var redM = new THREE.MeshPhongMaterial({ map: ironTexture, color: 0xff0000 });
             for (var i = 0; i < redBalls.length; i++) {
-                var redG = new THREE.SphereGeometry(ballRadius, 32, 16);
-                var redM = new THREE.MeshPhongMaterial({map: ironTexture, color: 0xff0000});
-                var redBallMesh = new THREE.Mesh(redG, redM);
-                redBallMesh.position.set(redBalls[i].GetPosition().x, redBalls[i].GetPosition().y, ballRadius);
+                var redBallMesh = new THREE.Mesh(g, redM);
+                var pos = redBalls[i].GetPosition();
+                redBallMesh.position.set(pos.x, pos.y, ballRadius);
                 scene.add(redBallMesh);
                 redBallMeshes.push(redBallMesh);
             }
@@ -185,9 +223,9 @@
             scene.add(mazeMesh);
 
             // Add the ground.
-            g = new THREE.PlaneGeometry(mazeDimension * 10, mazeDimension * 10, mazeDimension, mazeDimension);
+            g = new THREE.PlaneGeometry(mazeDimension * 2, mazeDimension * 2, 10, 10);
             planeTexture.wrapS = planeTexture.wrapT = THREE.RepeatWrapping;
-            planeTexture.repeat.set(mazeDimension * 5, mazeDimension * 5);
+            planeTexture.repeat.set(mazeDimension, mazeDimension);
             m = new THREE.MeshPhongMaterial({ map: planeTexture });
             planeMesh = new THREE.Mesh(g, m);
             planeMesh.position.set((mazeDimension - 1) / 2, (mazeDimension - 1) / 2, 0);
@@ -303,6 +341,7 @@
 
             // Get input from both keyboard and gamepad
             var gamepadAxis = getGamepadInput();
+            var keyAxis = updateInputAxis();
             var finalAxis;
             if (gamepadAxis[0] !== 0 || gamepadAxis[1] !== 0) {
                 finalAxis = gamepadAxis;
@@ -313,7 +352,6 @@
             // Apply user-directed force.
             var f = new b2Vec2(finalAxis[0] * wBall.GetMass() * 0.25, finalAxis[1] * wBall.GetMass() * 0.25);
             wBall.ApplyImpulse(f, wBall.GetPosition());
-            keyAxis = [0, 0];
 
             updateRedBalls();
             checkCollisions();
@@ -322,6 +360,13 @@
             wWorld.Step(1 / 60, 8, 3);
         }
 
+        function calcLevel(dimension) {
+            if ((dimension - 21) % 6 === 0) {
+                return (dimension - 21) / 3 + 1;
+            } else {
+                return (dimension - 19) / 3;
+            }
+        }
 
         function updateRenderWorld() {
 
@@ -374,6 +419,7 @@
 
 
         function gameLoop() {
+            // updateFPSCounter();
 
             switch (gameState) {
 
@@ -406,7 +452,7 @@
                             exitY = mazeDimension - 2;
                             break;
                     }
-                    
+
                     // Set spawn position to center of maze
                     spawnX = Math.floor(mazeDimension / 2);
                     spawnY = Math.floor(mazeDimension / 2);
@@ -419,7 +465,7 @@
                     camera.position.set(spawnX, spawnY, 5);
                     light.position.set(spawnX, spawnY, 1.3);
                     light.intensity = 0;
-                    var level = Math.floor((mazeDimension - 21) / 4) + 1;
+                    var level = calcLevel(mazeDimension);
                     $('#level').html('Level ' + level);
                     gameState = 'fade in';
                     break;
@@ -442,7 +488,13 @@
                     var mazeX = Math.floor(ballMesh.position.x + 0.5);
                     var mazeY = Math.floor(ballMesh.position.y + 0.5);
                     if (mazeX == exitX && mazeY == exitY) {
-                        mazeDimension += 4;
+                        var currLevel = calcLevel(mazeDimension);
+                        var nextLevel = currLevel + 1;
+                        if (nextLevel % 2 === 0) {
+                            mazeDimension += 4;
+                        } else {
+                            mazeDimension += 2;
+                        }
                         gameState = 'fade out';
                     }
                     break;
@@ -470,11 +522,6 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
-        }
-
-
-        function onMoveKey(axis) {
-            keyAxis = axis.slice(0);
         }
 
 
@@ -526,9 +573,22 @@
             document.body.appendChild(renderer.domElement);
 
             // Bind keyboard and resize events.
-            KeyboardJS.bind.axis('left', 'right', 'down', 'up', onMoveKey);
-            KeyboardJS.bind.axis('h', 'l', 'j', 'k', onMoveKey);
-            KeyboardJS.bind.axis('a', 'd', 's', 'w', onMoveKey);
+            KeyboardJS.bind.key('left', function () { inputState.left = true; }, function () { inputState.left = false; });
+            KeyboardJS.bind.key('right', function () { inputState.right = true; }, function () { inputState.right = false; });
+            KeyboardJS.bind.key('up', function () { inputState.up = true; }, function () { inputState.up = false; });
+            KeyboardJS.bind.key('down', function () { inputState.down = true; }, function () { inputState.down = false; });
+
+            // WASD keys
+            KeyboardJS.bind.key('a', function () { inputState.left = true; }, function () { inputState.left = false; });
+            KeyboardJS.bind.key('d', function () { inputState.right = true; }, function () { inputState.right = false; });
+            KeyboardJS.bind.key('w', function () { inputState.up = true; }, function () { inputState.up = false; });
+            KeyboardJS.bind.key('s', function () { inputState.down = true; }, function () { inputState.down = false; });
+
+            // Vim keys
+            KeyboardJS.bind.key('h', function () { inputState.left = true; }, function () { inputState.left = false; });
+            KeyboardJS.bind.key('l', function () { inputState.right = true; }, function () { inputState.right = false; });
+            KeyboardJS.bind.key('k', function () { inputState.up = true; }, function () { inputState.up = false; });
+            KeyboardJS.bind.key('j', function () { inputState.down = true; }, function () { inputState.down = false; });
             $(window).resize(onResize);
 
 
@@ -578,6 +638,16 @@
             color: yellow;
             font-weight: bold;
         }
+
+        #performance {
+            position: absolute;
+            left: 0px;
+            top: 30px;
+            padding: 4px;
+            color: #00ff00;
+            font-weight: bold;
+            font-size: 12px;
+        }
     </style>
 
 </head>
@@ -599,7 +669,9 @@
     <div id='level'>
         Level 1
     </div>
-
+    <!-- <div id='performance'>
+        FPS: 0
+    </div> -->
 </body>
 
 </html>
