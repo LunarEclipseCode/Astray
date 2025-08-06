@@ -356,8 +356,28 @@
             updateRedBalls();
             checkCollisions();
 
+            var velBeforeStep = wBall.GetLinearVelocity().Copy();
+
             // Take a time step.
             wWorld.Step(1 / 60, 8, 3);
+
+            // Check for unwanted velocity changes
+            var velAfterStep = wBall.GetLinearVelocity().Copy();
+            var velChange = new b2Vec2(velAfterStep.x - velBeforeStep.x, velAfterStep.y - velBeforeStep.y);
+
+            // If input was vertical only but there is a sudden change in X velocity
+            if (Math.abs(finalAxis[0]) < 0.1 && Math.abs(finalAxis[1]) > 0.1 && Math.abs(velChange.x) > 0.1) {
+                var correctedVel = velAfterStep.Copy();
+                correctedVel.x = velBeforeStep.x;
+                wBall.SetLinearVelocity(correctedVel);
+            }
+
+            // If input was horizontal only but there is a sudden change in Y velocity
+            else if (Math.abs(finalAxis[1]) < 0.1 && Math.abs(finalAxis[0]) > 0.1 && Math.abs(velChange.y) > 0.1) {
+                var correctedVel = velAfterStep.Copy();
+                correctedVel.y = velBeforeStep.y;
+                wBall.SetLinearVelocity(correctedVel);
+            }
         }
 
         function calcLevel(dimension) {
