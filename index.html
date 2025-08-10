@@ -2,12 +2,12 @@
 
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=0.75, maximum-scale=0.75, user-scalable=no">
-    <script src='Box2dWeb.min.js'></script>
-    <script src="Three.js"></script>
-    <script src="keyboard.js"></script>
-    <script src="jquery.js"></script>
+    <script src='dependencies/Box2dWeb.min.js'></script>
+    <script src="dependencies/Three.js"></script>
+    <script src="dependencies/keyboard.js"></script>
+    <script src="dependencies/jquery.js"></script>
+    <script src="dependencies/ua-parser.js"></script>
     <script src="maze.js"></script>
-    <script src="ua-parser.js"></script>
 
     <script>
 
@@ -23,9 +23,9 @@
             planeMesh = undefined,
             ballMesh = undefined,
             ballRadius = 0.225,
-            ironTexture = THREE.ImageUtils.loadTexture('/ball.png'),
-            planeTexture = THREE.ImageUtils.loadTexture('/concrete.png'),
-            brickTexture = THREE.ImageUtils.loadTexture('/brick.png'),
+            ironTexture = THREE.ImageUtils.loadTexture('textures/ball.png'),
+            planeTexture = THREE.ImageUtils.loadTexture('textures/concrete.png'),
+            brickTexture = THREE.ImageUtils.loadTexture('textures/brick.png'),
             gameState = undefined,
             gamepadIndex = -1,
             spawnX = 0,
@@ -1159,6 +1159,14 @@
 
             window.addEventListener("gamepaddisconnected", function (e) {
                 gamepadIndex = -1;
+            });
+
+            // Make the WASD or HJKL keys work when accessibility.typeaheadfind = true in firefox
+            document.addEventListener('keydown', function(e) {
+                if (['w', 'a', 's', 'd', 'h', 'j', 'k', 'l'].includes(e.key)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
             });
 
             // Create the renderer.
