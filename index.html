@@ -34,10 +34,18 @@
             exitCorner = 0, // 0=top-right, 1=bottom-right, 2=bottom-left, 3=top-left
 
             // Red balls
-            redBalls = [],
+            redBallSpawnData = [],
+            activeRedBalls = [],
             redBallMeshes = [],
-            redBallPrevPos = [],
+            activeRedBallData = [],
+            activationDist = 8,
+            deactivationDist = Math.pow(12,2)
+            
             numRedBalls = 0,
+
+            // Spatial partitioning to check only nearby red balls instead of all 
+            spatialGrid = {},
+            gridSize = 5,
 
             // FPS Counter
             frameCount = 0,
@@ -62,13 +70,135 @@
             wWorld = undefined,
             wBall = undefined;
 
-        inputState = {
+            inputState = {
             left: false,
             right: false,
             up: false,
             down: false
         };
 
+        function getGridKey(x, y) {
+            var gridX = Math.floor(x / gridSize);
+            var gridY = Math.floor(y / gridSize);
+            return gridX + ',' + gridY;
+        }
+
+        function addToSpatialGrid(spawnData) {
+            var key = getGridKey(spawnData.x, spawnData.y);
+            if (!spatialGrid[key]) {
+                spatialGrid[key] = [];
+            }
+            spatialGrid[key].push(spawnData);
+        }
+
+        function getNearbySpawnData(playerX, playerY, radius) {
+            var nearbySpawns = [];
+            var searchRadius = Math.ceil(radius / gridSize);
+            var playerGridX = Math.floor(playerX / gridSize);
+            var playerGridY = Math.floor(playerY / gridSize);
+
+            for (var dx = -searchRadius; dx <= searchRadius; dx++) {
+                for (var dy = -searchRadius; dy <= searchRadius; dy++) {
+                    var key = (playerGridX + dx) + ',' + (playerGridY + dy);
+                    if (spatialGrid[key]) {
+                        nearbySpawns = nearbySpawns.concat(spatialGrid[key]);
+                    }
+                }
+            }
+            return nearbySpawns;
+        }
+
+        function createRedBall(spawnData) {
+            // Create the red ball physics body
+            var redBallDef = new b2BodyDef();
+            redBallDef.type = b2Body.b2_dynamicBody;
+            redBallDef.position.Set(spawnData.x, spawnData.y);
+            var redBall = wWorld.CreateBody(redBallDef);
+
+            var redFixDef = new b2FixtureDef();
+            redFixDef.density = 1.0;
+            redFixDef.friction = 0.0;
+            redFixDef.restitution = 0.25;
+            redFixDef.shape = new b2CircleShape(ballRadius);
+            redBall.CreateFixture(redFixDef);
+
+            // Add movement properties
+            redBall.movementAxis = spawnData.movementAxis;
+            redBall.direction = spawnData.direction;
+            redBall.speed = spawnData.speed;
+            redBall.lastMove = 0;
+
+            // Create the mesh
+            var g = new THREE.SphereGeometry(ballRadius, 32, 16);
+            var redM = new THREE.MeshPhongMaterial({ map: ironTexture, color: 0xff0000 });
+            var redBallMesh = new THREE.Mesh(g, redM);
+            redBallMesh.position.set(spawnData.x, spawnData.y, ballRadius);
+            scene.add(redBallMesh);
+
+            // Add to active arrays
+            activeRedBalls.push(redBall);
+            redBallMeshes.push(redBallMesh);
+            activeRedBallData.push({
+                prevPos: { x: spawnData.x, y: spawnData.y },
+                spawnDataIndex: spawnData.index
+            });
+
+            spawnData.isActive = true;
+
+            return redBall;
+        }
+
+        function destroyRedBall(activeIndex) {
+            if (activeIndex < 0 || activeIndex >= activeRedBalls.length) return;
+
+            // Remove physics body
+            wWorld.DestroyBody(activeRedBalls[activeIndex]);
+            
+            // Remove mesh from scene
+            scene.remove(redBallMeshes[activeIndex]);
+
+            // Mark spawn data as inactive
+            var spawnDataIndex = activeRedBallData[activeIndex].spawnDataIndex;
+            if (spawnDataIndex >= 0 && spawnDataIndex < redBallSpawnData.length) {
+                redBallSpawnData[spawnDataIndex].isActive = false;
+            }
+
+            // Remove from arrays using splice
+            activeRedBalls.splice(activeIndex, 1);
+            redBallMeshes.splice(activeIndex, 1);
+            activeRedBallData.splice(activeIndex, 1);
+        }
+
+        // Create and destroy red balls to not have too many meshes in memory
+        function manageRedBalls() {
+            var playerPos = wBall.GetPosition();
+            
+            // Get nearby spawn data
+            var nearbySpawns = getNearbySpawnData(playerPos.x, playerPos.y, activationDist);
+            var actDistSquared = Math.pow(activationDist, 2)
+            
+            // Activate nearby red balls that aren't already active
+            for (var i = 0; i < nearbySpawns.length; i++) {
+                var spawnData = nearbySpawns[i];
+                if (!spawnData.isActive) {
+                    var distance = Math.pow(playerPos.x - spawnData.x, 2) + Math.pow(playerPos.y - spawnData.y, 2);
+                    
+                    if (distance <= actDistSquared) {
+                        createRedBall(spawnData);
+                    }
+                }
+            }
+
+            // Deactivate red balls that are too far away
+            for (var i = activeRedBalls.length - 1; i >= 0; i--) {
+                var redPos = activeRedBalls[i].GetPosition();
+                var distance = Math.pow(playerPos.x - redPos.x, 2) + Math.pow(playerPos.y - redPos.y, 2);
+
+                if (distance > deactivationDist) {
+                    destroyRedBall(i);
+                }
+            }
+        }
 
         function updateInputAxis() {
             var x = 0, y = 0;
@@ -95,6 +225,203 @@
         }
 
 
+        function extendPathHorizontal(startX, startY) {
+            var minX = startX;
+            while (minX > 0 && !maze[minX - 1][startY]) {
+                minX--;
+            }
+
+            var maxX = startX;
+            while (maxX < mazeDimension - 1 && !maze[maxX + 1][startY]) {
+                maxX++;
+            }
+
+            var pathWidth = maxX - minX + 1;
+
+            return {
+                type: 'horizontal',
+                y: startY,
+                minX: minX,
+                maxX: maxX,
+                width: pathWidth
+            };
+        }
+
+        function extendPathVertical(startX, startY) {
+            var minY = startY;
+            while (minY > 0 && !maze[startX][minY - 1]) {
+                minY--;
+            }
+
+            var maxY = startY;
+            while (maxY < mazeDimension - 1 && !maze[startX][maxY + 1]) {
+                maxY++;
+            }
+
+            var pathWidth = maxY - minY + 1;
+
+            return {
+                type: 'vertical',
+                x: startX,
+                minY: minY,
+                maxY: maxY,
+                width: pathWidth
+            };
+        }
+
+        function findAllPaths() {
+            var allPaths = [];
+            var visited = [];
+            var pathVisited = [];
+
+            // Initialize visited tracking
+            for (var i = 0; i < mazeDimension; i++) {
+                visited[i] = [];
+                pathVisited[i] = [];
+                for (var j = 0; j < mazeDimension; j++) {
+                    visited[i][j] = false;
+                    pathVisited[i][j] = false;
+                }
+            }
+
+            var stack = [{ x: spawnX, y: spawnY, arrivalDirection: -1 }];
+
+            while (stack.length > 0) {
+                var current = stack.pop();
+                var x = current.x;
+                var y = current.y;
+                var arrivalDirection = current.arrivalDirection;
+
+                // Skip invalid positions (out of bounds, already visited, walls)
+                if (x < 0 || x >= mazeDimension || y < 0 || y >= mazeDimension ||
+                    visited[x][y] || maze[x][y]) {
+                    continue;
+                }
+
+                visited[x][y] = true;
+
+                // Get available directions (0=right, 1=down, 2=left, 3=up)
+                var directions = [];
+                if (x < mazeDimension - 1 && !maze[x + 1][y]) directions.push(0);
+                if (y < mazeDimension - 1 && !maze[x][y + 1]) directions.push(1);
+                if (x > 0 && !maze[x - 1][y]) directions.push(2);
+                if (y > 0 && !maze[x][y - 1]) directions.push(3);
+
+                // If this is a junction (more than 2 directions including where we arrived from)
+                // or if we changed direction, create path segments
+                var totalDirections = directions.length;
+                if (arrivalDirection !== -1) totalDirections++; // Add the direction we arrived from
+
+                if (totalDirections > 2 || (arrivalDirection !== -1 && directions.length > 0)) {
+                    // Create horizontal path if we can move left or right
+                    var canMoveHorizontal = directions.includes(0) || directions.includes(2);
+
+                    if (canMoveHorizontal && !pathVisited[x][y]) {
+                        var hPath = extendPathHorizontal(x, y);
+                        if (hPath.width > 1) {
+                            allPaths.push(hPath);
+                            // Mark all cells in this path as path-visited
+                            for (var px = hPath.minX; px <= hPath.maxX; px++) {
+                                if (px >= 0 && px < mazeDimension && !maze[px][hPath.y]) {
+                                    pathVisited[px][hPath.y] = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Create vertical path if we can move up or down
+                    var canMoveVertical = directions.includes(1) || directions.includes(3);
+
+                    if (canMoveVertical && !pathVisited[x][y]) {
+                        var vPath = extendPathVertical(x, y);
+                        if (vPath.width > 1) {
+                            allPaths.push(vPath);
+                            // Mark all cells in this path as path-visited
+                            for (var py = vPath.minY; py <= vPath.maxY; py++) {
+                                if (py >= 0 && py < mazeDimension && !maze[vPath.x][py]) {
+                                    pathVisited[vPath.x][py] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add next positions to stack
+                for (var i = 0; i < directions.length; i++) {
+                    var dir = directions[i];
+                    var nextX = x, nextY = y, oppositeDir;
+
+                    switch (dir) {
+                        case 0: // right
+                            nextX = x + 1;
+                            oppositeDir = 2;
+                            break;
+                        case 1: // down
+                            nextY = y + 1;
+                            oppositeDir = 3;
+                            break;
+                        case 2: // left
+                            nextX = x - 1;
+                            oppositeDir = 0;
+                            break;
+                        case 3: // up
+                            nextY = y - 1;
+                            oppositeDir = 1;
+                            break;
+                    }
+
+                    stack.push({ x: nextX, y: nextY, arrivalDirection: oppositeDir });
+                }
+            }
+
+            return allPaths;
+        }
+
+        function pathContainsPoint(path, x, y) {
+            if (path.type === 'horizontal') {
+                return path.y === y && x >= path.minX && x <= path.maxX;
+            } else {
+                return path.x === x && y >= path.minY && y <= path.maxY;
+            }
+        }
+
+        function pathsIntersect(path1, path2) {
+            if (path1.type === 'horizontal' && path2.type === 'horizontal') {
+                return path1.y === path2.y &&
+                    path1.maxX >= path2.minX && path1.minX <= path2.maxX;
+            } else if (path1.type === 'vertical' && path2.type === 'vertical') {
+                return path1.x === path2.x &&
+                    path1.maxY >= path2.minY && path1.minY <= path2.maxY;
+            } else {
+                // One horizontal, one vertical
+                var hPath = path1.type === 'horizontal' ? path1 : path2;
+                var vPath = path1.type === 'vertical' ? path1 : path2;
+
+                return vPath.x >= hPath.minX && vPath.x <= hPath.maxX &&
+                    hPath.y >= vPath.minY && hPath.y <= vPath.maxY;
+            }
+        }
+
+        function getRandomPosition(path) {
+            if (path.type === 'horizontal') {
+                var randomX = path.minX + Math.random() * (path.maxX - path.minX + 1);
+                var sideOffset = (Math.random() < 0.5 ? -0.25 : 0.25);
+                return {
+                    x: Math.floor(randomX),
+                    y: path.y + sideOffset,
+                    movementAxis: 0
+                };
+            } else { // vertical
+                var randomY = path.minY + Math.random() * (path.maxY - path.minY + 1);
+                var sideOffset = (Math.random() < 0.5 ? -0.25 : 0.25);
+                return {
+                    x: path.x + sideOffset,
+                    y: Math.floor(randomY),
+                    movementAxis: 1
+                };
+            }
+        }
+
         function createPhysicsWorld() {
             // Create the world object.
             wWorld = new b2World(new b2Vec2(0, 0), true);
@@ -111,43 +438,141 @@
             fixDef.shape = new b2CircleShape(ballRadius);
             wBall.CreateFixture(fixDef);
 
-            // Create red balls
-            redBalls = [];
-            redBallPrevPos = [];
-            numRedBalls = Math.floor((mazeDimension) / 2);
+           // Create red balls
+            redBallSpawnData = [];
+            activeRedBalls = [];
+            redBallMeshes = [];
+            activeRedBallData = [];
+            spatialGrid = {};
+            
+            numRedBalls = Math.floor((mazeDimension * mazeDimension) * 0.04);
 
-            for (var i = 0; i < numRedBalls; i++) {
-                var redBallDef = new b2BodyDef();
-                redBallDef.type = b2Body.b2_dynamicBody;
+            // Find all paths by walking the maze
+            var allPaths = findAllPaths();
 
-                // Find a good spawn position for red ball
-                var redX, redY;
-                do {
-                    redX = Math.floor(Math.random() * (mazeDimension - 2)) + 1;
-                    redY = Math.floor(Math.random() * (mazeDimension - 2)) + 1;
-                    // Ensure it's on a path (odd coordinates) and away from spawn
-                } while (maze[redX][redY] || redX % 2 === 0 || redY % 2 === 0 ||
-                    (Math.abs(redX - spawnX) < 3 && Math.abs(redY - spawnY) < 3));
+            // Find all spawn paths
+            var spawnPaths = [];
+            for (var i = 0; i < allPaths.length; i++) {
+                if (pathContainsPoint(allPaths[i], spawnX, spawnY)) {
+                    spawnPaths.push(allPaths[i]);
+                }
+            }
 
-                redBallDef.position.Set(redX, redY);
-                var redBall = wWorld.CreateBody(redBallDef);
+            // Find all paths leading to the exit
+            var exitPaths = [];
+            var exitPathX, exitPathY;
+            
+            // Calculate the path coordinates that lead to the exit
+            switch (exitCorner) {
+                case 0: // Top-right
+                    exitPathX = mazeDimension - 1;
+                    exitPathY = mazeDimension - 2;
+                    break;
+                case 1: // Bottom-right
+                    exitPathX = mazeDimension - 1;
+                    exitPathY = 1;
+                    break;
+                case 2: // Bottom-left
+                    exitPathX = 0;
+                    exitPathY = 1;
+                    break;
+                case 3: // Top-left
+                    exitPathX = 0;
+                    exitPathY = mazeDimension - 2;
+                    break;
+            }
+            
+            for (var i = 0; i < allPaths.length; i++) {
+                if (pathContainsPoint(allPaths[i], exitPathX, exitPathY)) {
+                    exitPaths.push(allPaths[i]);
+                }
+            }
 
-                var redFixDef = new b2FixtureDef();
-                redFixDef.density = 1.0;
-                redFixDef.friction = 0.0;
-                redFixDef.restitution = 0.25;
-                redFixDef.shape = new b2CircleShape(ballRadius);
-                redBall.CreateFixture(redFixDef);
+            var invalidPaths = spawnPaths.concat(exitPaths);
 
-                // Add movement properties for back-and-forth movement
-                // Pick a random direction: 0=horizontal, 1=vertical
-                redBall.movementAxis = Math.floor(Math.random() * 2);
-                redBall.direction = Math.random() < 0.5 ? -1 : 1;
-                redBall.speed = 0.6 + Math.random() * 0.6; // Random speed between 0.6 and 1.2
-                redBall.lastMove = 0;
+            var validPaths = [];
+            for (var i = 0; i < allPaths.length; i++) {
+                var path = allPaths[i];
+                var isValid = true;
 
-                redBalls.push(redBall);
-                redBallPrevPos.push({ x: redX, y: redY });
+                // Check if this path is a forbidden path
+                for (var j = 0; j < invalidPaths.length; j++) {
+                    if (path === invalidPaths[j]) {
+                        isValid = false;
+                        break;
+                    }
+                }
+
+                if (isValid) {
+                    validPaths.push(path);
+                }
+            }
+
+            // Select non-intersecting paths for red balls
+            var selectedPaths = [];
+
+            // Create availability tracking array
+            var pathAvailable = new Array(validPaths.length);
+            for (var i = 0; i < validPaths.length; i++) {
+                pathAvailable[i] = true;
+            }
+
+            // Pre-compute intersection relationships for faster lookup
+            var intersectionMap = new Array(validPaths.length);
+            for (var i = 0; i < validPaths.length; i++) {
+                intersectionMap[i] = [];
+                for (var j = 0; j < validPaths.length; j++) {
+                    if (i !== j && pathsIntersect(validPaths[i], validPaths[j])) {
+                        intersectionMap[i].push(j);
+                    }
+                }
+            }
+
+            // This approach is faster compared to using .filter in each loop
+            for (var ballCount = 0; ballCount < numRedBalls; ballCount++) {
+                // Find available paths
+                var availableIndices = [];
+                for (var i = 0; i < pathAvailable.length; i++) {
+                    if (pathAvailable[i]) {
+                        availableIndices.push(i);
+                    }
+                }
+
+                if (availableIndices.length === 0) break;
+
+                // Randomly select from available paths
+                var randomIndex = Math.floor(Math.random() * availableIndices.length);
+                var selectedPathIndex = availableIndices[randomIndex];
+                var selectedPath = validPaths[selectedPathIndex];
+                
+                selectedPaths.push(selectedPath);
+
+                // Mark selected path as unavailable
+                pathAvailable[selectedPathIndex] = false;
+
+                // Mark all intersecting paths as unavailable
+                var intersectingIndices = intersectionMap[selectedPathIndex];
+                for (var k = 0; k < intersectingIndices.length; k++) {
+                    pathAvailable[intersectingIndices[k]] = false;
+                }
+
+                // Get random position on the selected path
+                var position = getRandomPosition(selectedPath);
+
+                // Create the red ball spawn data
+                var spawnData = {
+                    index: ballCount,
+                    x: position.x,
+                    y: position.y,
+                    movementAxis: position.movementAxis,
+                    direction: Math.random() < 0.5 ? -1 : 1,
+                    speed: 1 + Math.random() * 0.8,
+                    isActive: false,
+                    activeIndex: -1
+                };
+
+                redBallSpawnData.push(spawnData);
+                addToSpatialGrid(spawnData);
             }
 
             // Create the maze.
@@ -205,16 +630,6 @@
             ballMesh.position.set(spawnX, spawnY, ballRadius);
             scene.add(ballMesh);
 
-            // Add red balls
-            redBallMeshes = [];
-            var redM = new THREE.MeshPhongMaterial({ map: ironTexture, color: 0xff0000 });
-            for (var i = 0; i < redBalls.length; i++) {
-                var redBallMesh = new THREE.Mesh(g, redM);
-                var pos = redBalls[i].GetPosition();
-                redBallMesh.position.set(pos.x, pos.y, ballRadius);
-                scene.add(redBallMesh);
-                redBallMeshes.push(redBallMesh);
-            }
 
             // Add the camera.
             var aspect = window.innerWidth / window.innerHeight;
@@ -284,8 +699,8 @@
         function updateRedBalls() {
             var currentTime = Date.now();
             
-            for (var i = 0; i < redBalls.length; i++) {
-                var redBall = redBalls[i];
+            for (var i = 0; i < activeRedBalls.length; i++) {
+                var redBall = activeRedBalls[i];
                 var pos = redBall.GetPosition();
                 var vel = redBall.GetLinearVelocity();
 
@@ -313,7 +728,7 @@
                 }
 
                 // Apply friction to red balls
-                var frictionFactor = Math.pow(0.85, deltaTime * 60); // Scale friction by deltaTime
+                var frictionFactor = Math.pow(0.85, deltaTime * 60);
                 var vel = redBall.GetLinearVelocity();
                 vel.Multiply(frictionFactor);
                 redBall.SetLinearVelocity(vel);
@@ -322,15 +737,13 @@
 
         function checkCollisions() {
             var playerPos = wBall.GetPosition();
+            var tempRadius = Math.pow(ballRadius * 2, 2)
 
-            for (var i = 0; i < redBalls.length; i++) {
-                var redPos = redBalls[i].GetPosition();
-                var distance = Math.sqrt(
-                    Math.pow(playerPos.x - redPos.x, 2) +
-                    Math.pow(playerPos.y - redPos.y, 2)
-                );
+            for (var i = 0; i < activeRedBalls.length; i++) {
+                var redPos = activeRedBalls[i].GetPosition();
+                var distance = Math.pow(playerPos.x - redPos.x, 2) + Math.pow(playerPos.y - redPos.y, 2);
 
-                if (distance < ballRadius * 2) {
+                if (distance < tempRadius) {
                     // Restart the level
                     gameState = 'initialize';
                     return;
@@ -340,7 +753,7 @@
 
         function updatePhysicsWorld() {
 
-            // Apply "friction".
+            // Apply "friction". 
             var lv = wBall.GetLinearVelocity();
             var frictionFactor = Math.pow(0.95, deltaTime * 60);
             lv.Multiply(frictionFactor);
@@ -361,6 +774,8 @@
             var f = new b2Vec2(finalAxis[0] * wBall.GetMass() * forceMultiplier, finalAxis[1] * wBall.GetMass() * forceMultiplier);
             wBall.ApplyImpulse(f, wBall.GetPosition());
 
+            manageRedBalls();
+            
             updateRedBalls();
             checkCollisions();
 
@@ -415,10 +830,10 @@
             ballMesh.matrix = tempMat;
             ballMesh.rotation.getRotationFromMatrix(ballMesh.matrix);
 
-            // Update rotation of red balls
-            for (var i = 0; i < redBalls.length; i++) {
-                var redPos = redBalls[i].GetPosition();
-                var prevPos = redBallPrevPos[i];
+            // Update rotation of active red balls
+            for (var i = 0; i < activeRedBalls.length; i++) {
+                var redPos = activeRedBalls[i].GetPosition();
+                var prevPos = activeRedBallData[i].prevPos;
 
                 var stepX = redPos.x - prevPos.x;
                 var stepY = redPos.y - prevPos.y;
@@ -432,8 +847,8 @@
                     redBallMeshes[i].rotation.x += -stepY / ballRadius;
                 }
 
-                redBallPrevPos[i].x = redPos.x;
-                redBallPrevPos[i].y = redPos.y;
+                prevPos.x = redPos.x;
+                prevPos.y = redPos.y;
             }
 
             // Update camera and light positions.
@@ -498,6 +913,7 @@
 
                     createPhysicsWorld();
                     createRenderWorld();
+                    manageRedBalls();
                     camera.position.set(spawnX, spawnY, 5);
                     light.position.set(spawnX, spawnY, 1.3);
                     light.intensity = 0;
@@ -507,8 +923,8 @@
                     break;
 
                 case 'fade in':
-                    var fadeSpeed = 6.0 * deltaTime;
-                    light.intensity += fadeSpeed * (1.0 - light.intensity);
+                var fadeSpeed = 6.0 * deltaTime;
+                light.intensity += fadeSpeed * (1.0 - light.intensity);
                     renderer.render(scene, camera);
                     if (Math.abs(light.intensity - 1.0) < 0.05) {
                         light.intensity = 1.0;
