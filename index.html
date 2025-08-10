@@ -1,12 +1,13 @@
 <html>
 
 <head>
-
+    <meta name="viewport" content="width=device-width, initial-scale=0.75, maximum-scale=0.75, user-scalable=no">
     <script src='Box2dWeb.min.js'></script>
     <script src="Three.js"></script>
     <script src="keyboard.js"></script>
     <script src="jquery.js"></script>
     <script src="maze.js"></script>
+    <script src="ua-parser.js"></script>
 
     <script>
 
@@ -32,6 +33,14 @@
             exitX = 0,
             exitY = 0,
             exitCorner = 0, // 0=top-right, 1=bottom-right, 2=bottom-left, 3=top-left
+
+            // Mobile joystick variables
+            isMobile = false,
+            joystickActive = false,
+            joystickAxis = [0, 0],
+            joystickStartPos = { x: 0, y: 0 },
+            joystickCurrentPos = { x: 0, y: 0 },
+            joystickMaxDistance = 100,
 
             // Red balls
             redBallSpawnData = [],
@@ -76,6 +85,95 @@
             up: false,
             down: false
         };
+
+        function detectMobile() {
+            var parser = new UAParser();
+            var device = parser.getDevice();
+            return device.type === 'mobile' || device.type === 'tablet';
+        }
+
+        function saveGameState() {
+            var gameData = {
+                mazeDimension: mazeDimension,
+                exitX: exitX,
+                exitY: exitY,
+                exitCorner: exitCorner
+            };
+            localStorage.setItem('mazeGameState', JSON.stringify(gameData));
+        }
+
+        function loadGameState() {
+            var savedData = localStorage.getItem('mazeGameState');
+            if (savedData) {
+                try {
+                    var gameData = JSON.parse(savedData);
+                    mazeDimension = gameData.mazeDimension || 21;
+                    exitX = gameData.exitX || 0;
+                    exitY = gameData.exitY || 0;
+                    exitCorner = gameData.exitCorner || 0;
+                } catch (e) {
+                    mazeDimension = 21;
+                }
+            }
+        }
+
+        // Mobile joystick functions
+        function initJoystick() {
+            if (!isMobile) return;
+
+            var touchArea = $('#mobile-joystick');
+            
+            // Touch events for the bottom area
+            touchArea.on('touchstart', function(e) {
+                e.preventDefault();
+                var touch = e.originalEvent.touches[0];
+                
+                joystickActive = true;
+                joystickStartPos.x = touch.clientX;
+                joystickStartPos.y = touch.clientY;
+                joystickCurrentPos.x = touch.clientX;
+                joystickCurrentPos.y = touch.clientY;
+                
+                joystickAxis[0] = 0;
+                joystickAxis[1] = 0;
+            });
+
+            $(document).on('touchmove', function(e) {
+                if (!joystickActive) return;
+                e.preventDefault();
+                
+                var touch = e.originalEvent.touches[0];
+                joystickCurrentPos.x = touch.clientX;
+                joystickCurrentPos.y = touch.clientY;
+                
+                var deltaX = joystickCurrentPos.x - joystickStartPos.x;
+                var deltaY = joystickCurrentPos.y - joystickStartPos.y;
+                var distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+                
+                // Limit movement to maximum distance
+                if (distance > joystickMaxDistance) {
+                    deltaX = (deltaX / distance) * joystickMaxDistance;
+                    deltaY = (deltaY / distance) * joystickMaxDistance;
+                }
+                
+                // Calculate normalized axis values
+                joystickAxis[0] = deltaX / joystickMaxDistance;
+                joystickAxis[1] = -deltaY / joystickMaxDistance;
+            });
+
+            $(document).on('touchend', function(e) {
+                if (!joystickActive) return;
+                e.preventDefault();
+                
+                joystickActive = false;
+                joystickAxis = [0, 0];
+            });
+        }
+
+        function getJoystickInput() {
+            if (!isMobile) return [0, 0];
+            return [joystickAxis[0] * 0.85, joystickAxis[1] * 0.85];
+        }
 
         function getGridKey(x, y) {
             var gridX = Math.floor(x / gridSize);
@@ -759,13 +857,18 @@
             lv.Multiply(frictionFactor);
             wBall.SetLinearVelocity(lv);
 
-            // Get input from both keyboard and gamepad
+            // Get input from keyboard, gamepad, and mobile joystick
             var gamepadAxis = getGamepadInput();
             var keyAxis = updateInputAxis();
+            var mobileJoystick = getJoystickInput();
             var finalAxis;
             if (gamepadAxis[0] !== 0 || gamepadAxis[1] !== 0) {
                 finalAxis = gamepadAxis;
-            } else {
+            } 
+            else if(mobileJoystick[0] !== 0 || mobileJoystick[1] !== 0) {
+                finalAxis = mobileJoystick;
+            }
+            else {
                 finalAxis = keyAxis;
             }
 
@@ -877,8 +980,15 @@
                 case 'initialize':
                     maze = generateSquareMaze(mazeDimension);
 
-                    // Randomly select one of the four corners for the exit
-                    exitCorner = Math.floor(Math.random() * 4);
+                    // Store current maze dimension to check against saved data
+                    var tempSize = mazeDimension;
+                    
+                    loadGameState();
+                    
+                    if (mazeDimension !== tempSize) {
+                        mazeDimension = tempSize;
+                        exitCorner = Math.floor(Math.random() * 4);
+                    }
 
                     // Create exit based on selected corner
                     switch (exitCorner) {
@@ -910,6 +1020,9 @@
                     // Ensure spawn is on an odd coordinate
                     if (spawnX % 2 === 0) spawnX++;
                     if (spawnY % 2 === 0) spawnY++;
+
+                    // Save game state to cache
+                    saveGameState();
 
                     createPhysicsWorld();
                     createRenderWorld();
@@ -976,6 +1089,7 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
+            $('#instructions').center();
         }
 
 
@@ -1006,11 +1120,37 @@
 
         $(document).ready(function () {
 
+            // Show/hide touch area based on device type
+            isMobile = detectMobile();
+            
+            if (isMobile) {
+                $('#mobile-joystick').show();
+                initJoystick();
+            } else {
+                $('#mobile-joystick').hide();
+            }
+
+            loadGameState();
+
             // Prepare the instructions.
             $('#instructions').center();
             $('#instructions').hide();
-            KeyboardJS.bind.key('i', function () { $('#instructions').show() },
-                function () { $('#instructions').hide() });
+
+            // Icon event handlers
+            $('#info-icon').click(function () {
+                $('#instructions').toggle();
+            });
+
+            $('#github-icon').click(function () {
+                window.open('https://github.com/LunarEclipseCode/Astray', '_blank');
+            });
+
+            // Click outside to close panels
+            $(document).click(function (e) {
+                if (!$(e.target).closest('#instructions, #info-icon').length) {
+                    $('#instructions').hide();
+                }
+            });
 
             // Add gamepad event listeners
             window.addEventListener("gamepadconnected", function (e) {
@@ -1080,14 +1220,6 @@
             border: 2px solid white;
         }
 
-        #help {
-            position: absolute;
-            left: 0px;
-            bottom: 0px;
-            padding: 4px;
-            color: white;
-        }
-
         #level {
             position: absolute;
             left: 0px;
@@ -1095,6 +1227,7 @@
             padding: 4px;
             color: yellow;
             font-weight: bold;
+            font-size: 20px;
         }
 
         #performance {
@@ -1106,6 +1239,50 @@
             font-weight: bold;
             font-size: 12px;
         }
+
+        #icons {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 15px;
+        }
+
+        .icon {
+            width: 36px;
+            height: 36px;
+            cursor: pointer;
+            fill: white;
+            transition: fill 0.2s;
+            object-fit: contain;
+        }
+
+        #info-icon {
+            width: 30px; 
+            height: 30px; 
+            border: 4px solid white; 
+            border-radius: 50%; 
+            display: flex; 
+            cursor: pointer;
+            align-items: center; 
+            justify-content: center; 
+            color: white; 
+            font-weight: bold; 
+            font-size: 24px; 
+            font-family: serif;
+        }
+
+        #mobile-joystick {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 50%;
+            background-color: transparent;
+            display: none;
+            z-index: 999;
+            touch-action: none;
+        }
     </style>
 
 </head>
@@ -1113,16 +1290,23 @@
 <body>
 
     <div id='instructions'>
-        How to play Astray:
+        How to play Astray
         <br><br>
-        Use the arrow keys to move the ball and find the exit to the maze.
+        Navigate the ball through the maze to reach the exit. Each level's exit is randomly positioned at one of the four corners.
         <br><br>
-        Vim trainees: h, j, k, l
+        Avoid the red balls. Colliding with them will restart the level. 
+        <br><br>
+        When a level restarts, the maze layout will change, but the exit will remain in the same corner.
+        <br><br>
+        Controls: Use WASD, arrow keys, HJKL, a controller, or touch and drag on the screen (for mobile devices) to move the ball.<br><br>
     </div>
 
-    <div id='help'>
-        Hold down the 'I' key for instructions.
+    <div id='icons'>
+        <div id="info-icon">i</div>
+        <img class="icon" id="github-icon" src="github.svg" alt="GitHub">
     </div>
+
+    <div id="mobile-joystick"></div>
 
     <div id='level'>
         Level 1
